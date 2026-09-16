@@ -1,151 +1,92 @@
 import streamlit as st
-import pandas as pd
-import math
-from pathlib import Path
+import google.generativeai as genai
+import edge_tts
+import asyncio
+import os
+import cv2
+from PIL import Image
+import yt_dlp
 
-# Set the title and favicon that appear in the Browser's tab bar.
-st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
-)
+st.set_page_config(page_title="AI Movie Subtitle & Dubbing Pro", layout="wide")
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
+st.title("🎬 AI Movie Subtitle & Dubbing Pro (Khmer)")
+st.write("Tool សម្រាប់ទាញយកវីដេអូ កាត់យករូប Thumbnail បកប្រែសាច់រឿងដោយ Gemini និងបង្កើតសំឡេងនិយាយខ្មែរដោយ Edge-TTS")
 
-@st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
+# API Key Config
+api_key = st.text_input("បញ្ចូល Google Gemini API Key:", type="password")
 
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
+# Input source
+source_type = st.radio("ជ្រើសរើសប្រភពវីដេអូ:", ["Upload វីដេអូផ្ទាល់", "ទាញយកតាម Link (YouTube/TikTok/...)"])
 
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
+video_path = None
 
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
+if source_type == "Upload វីដេអូផ្ទាល់":
+    uploaded_file = st.file_uploader("ជ្រើសរើសဖိုင်វីដេអូ (MP4, MOV)", type=["mp4", "mov", "avi"])
+    if uploaded_file is not None:
+        video_path = "temp_video.mp4"
+        with open(video_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        st.success("អាប់ឡូតវីដេអូរួចរាល់!")
+else:
+    video_url = st.text_input("បញ្ចូលលីងវីដេអូ (YouTube/TikTok/...):")
+    if video_url:
+        if st.button("ទាញយកវីដេអូ"):
+            with st.spinner("កំពុងទាញយកវីដេអូ..."):
+                ydl_opts = {
+                    'format': 'best',
+                    'outtmpl': 'temp_video.mp4',
+                }
+                try:
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        ydl.download([video_url])
+                    video_path = "temp_video.mp4"
+                    st.success("ទាញយកវីដេអូរួចរាល់!")
+                except Exception as e:
+                    st.error(f"មានបញ្ហាក្នុងការទាញយក: {e}")
 
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
-    )
+if video_path and os.path.exists(video_path):
+    st.subheader("📺 វីដេអូដើម និង Thumbnail")
+    st.video(video_path)
+    
+    # Auto-Thumbnail extraction
+    cap = cv2.VideoCapture(video_path)
+    success, frame = cap.read()
+    if success:
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        thumb_img = Image.fromarray(frame_rgb)
+        thumb_path = "thumbnail.jpg"
+        thumb_img.save(thumb_path)
+        st.image(thumb_img, caption="រូប Thumbnail ស្វ័យប្រវត្តិ", use_container_width=True)
+        with open(thumb_path, "rb") as file:
+            st.download_button("📥 ទាញយក Thumbnail", data=file, file_name="thumbnail.jpg", mime="image/jpeg")
+    cap.release()
 
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
-
-    return gdp_df
-
-gdp_df = get_gdp_data()
-
-# -----------------------------------------------------------------------------
-# Draw the actual page
-
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
-
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
-
-# Add some spacing
-''
-''
-
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
-
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
-
-countries = gdp_df['Country Code'].unique()
-
-if not len(countries):
-    st.warning("Select at least one country")
-
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
-
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
-]
-
-st.header('GDP over time', divider='gray')
-
-''
-
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
-)
-
-''
-''
-
-
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
-
-st.header(f'GDP in {to_year}', divider='gray')
-
-''
-
-cols = st.columns(4)
-
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
-
-    with col:
-        first_gdp = first_year[first_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[last_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
+    st.subheader("🤖 បកប្រែសាច់រឿងពេញលេញដោយ Gemini AI")
+    prompt = st.text_area("បញ្ជាបន្ថែមដល់ AI (ស្រេចចិត្ត):", "សូមបកប្រែនិងសរសេរសាច់រឿងរៀបរាប់ពីវីដេអូនេះជាភាសាខ្មែរពេញលេញធម្មជាតិសម្រាប់ทำ Movie Recap:")
+    
+    if st.button("ចាប់ផ្តើមបកប្រែសាច់រឿង"):
+        if not api_key:
+            st.warning("សូមបញ្ចូល Gemini API Key ជាមុនសិន!")
         else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
+            with st.spinner("AI កំពុងវិភាគ និងបកប្រែសាច់រឿង..."):
+                try:
+                    genai.configure(api_key=api_key)
+                    video_file = genai.upload_file(path=video_path)
+                    while video_file.state.name == "PROCESSING":
+                        import time
+                        time.sleep(2)
+                        video_file = genai.get_file(video_file.name)
+                    
+                    model = genai.GenerativeModel("gemini-2.5-flash")
+                    response = model.generate_content([video_file, prompt])
+                    script_text = response.text
+                    st.session_state['script_text'] = script_text
+                    st.success("បកប្រែរួចរាល់!")
+                except Exception as e:
+                    st.error(f"កំហុសឆ្គង: {e}")
 
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
-        )
+    if 'script_text' in st.session_state:
+        st.text_area("អត្ថបទសាច់រឿង (Full Script):", st.session_state['script_text'], height=200)
+        
+        st.subheader("🎙️ បង្កើតសំឡេងនិយាយខ្មែរ (Edge-TTS)")
+        voice_choice = st.selectbox("ជ្រើសរើសសំឡេង:", ["km-KH-SreymomNeural (ស្រី)", "km-KH-PisethNeural (ប្រុស)"])
